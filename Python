@@ -1,0 +1,106 @@
+#"""Personal agent: tasks, notes, and chat in your terminal.
+
+Setup:
+    pip install anthropic
+    export ANTHROPIC_API_KEY="your-key"
+    python agent.py
+"""
+import json
+from datetime import datetime
+from pathlib import Path
+
+import anthropic
+
+MODEL = "claude-sonnet-5-5"
+DB = Path("agent_data.json")
+client = anthropic.Anthropic()
+
+
+def load():
+    return json.loads(DB.read_text()) if DB.exists() else {"tasks": [], "notes": []}
+
+
+def save(data):
+    DB.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def add_task(title, due=None):
+    d = load()
+    d["tasks"].append({"title": title, "due": due, "done": False})
+    save(d)
+    return f"Added task: {title}"
+
+
+def list_tasks():
+    return json.dumps(load()["tasks"], ensure_ascii=False)
+
+
+def complete_task(title):
+    d = load()
+    for t in d["tasks"]:
+        if title.lower() in t["title"].lower():
+            t["done"] = True
+            save(d)
+            return f"Done: {t['title']}"
+    return "Task not found"
+
+
+def save_note(text):
+    d = load()
+    d["notes"].append({"text": text, "at": datetime.now().isoformat(timespec="minutes")})
+    save(d)
+    return "Note saved"
+
+
+def search_notes(query):
+    hits = [n for n in load()["notes"] if query.lower() in n["text"].lower()]
+    return json.dumps(hits, ensure_ascii=False)
+
+
+FUNCS = {f.__name__: f for f in (add_task, list_tasks, complete_task, save_note, search_notes)}
+
+TOOLS = [
+    {"name": "add_task", "description": "Add a to-do item.",
+     "input_schema": {"type": "object", "properties": {"title": {"type": "string"}, "due": {"type": "string"}}, "required": ["title"]}},
+    {"name": "list_tasks", "description": "List all tasks.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "complete_task", "description": "Mark a task done by (partial) title.",
+     "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}},
+    {"name": "save_note", "description": "Save a note.",
+     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+    {"name": "search_notes", "description": "Search saved notes.",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+]
+
+SYSTEM = (
+    "You are a concise personal assistant. Use tools to manage tasks and notes. "
+    f"Today is {datetime.now():%A, %d %B %Y}. Reply in the user's language."
+)
+
+
+def run():
+    messages = []
+    print("Personal agent ready. Type 'exit' to quit.")
+    while True:
+        user = input("\nYou: ").strip()
+        if user.lower() in {"exit", "quit"}:
+            break
+        messages.append({"role": "user", "content": user})
+        while True:
+            resp = client.messages.create(
+                model=MODEL, max_tokens=1000, system=SYSTEM, tools=TOOLS, messages=messages
+            )
+            messages.append({"role": "assistant", "content": resp.content})
+            if resp.stop_reason != "tool_use":
+                print("Agent:", "".join(b.text for b in resp.content if b.type == "text"))
+                break
+            results = [
+                {"type": "tool_result", "tool_use_id": b.id, "content": FUNCS[b.name](**b.input)}
+                for b in resp.content if b.type == "tool_use"
+            ]
+            messages.append({"role": "user", "content": results})
+
+
+if __name__ == "__main__":
+    run()
+ Vicky-
